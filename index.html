@@ -302,6 +302,25 @@ textarea:focus { outline: none; border-color: var(--primary); }
   border-radius: 6px;
 }
 
+.quiz-actions {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.quiz-actions button {
+  flex: 1;
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  border: none;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--muted);
+  border: 2px solid var(--border);
+  font-weight: 600;
+}
+.quiz-actions button:hover { border-color: var(--primary); color: var(--primary); }
+
 /* 2-BUTTON RATING */
 .rating-wrap { display: none; }
 .rating-lbl { text-align: center; font-size: 14px; color: var(--muted); margin-bottom: 14px; }
@@ -359,24 +378,6 @@ textarea:focus { outline: none; border-color: var(--primary); }
   gap: 10px;
 }
 .empty-icon { font-size: 52px; }
-
-.loading {
-  text-align: center;
-  color: var(--muted);
-  padding: 20px;
-}
-.spinner {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  border: 3px solid var(--border);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
 </style>
 </head>
 <body>
@@ -600,18 +601,27 @@ function esc(s) {
 // ── CSV Export ────────────────────────────────────────────────
 function exportCSV() {
   if (!cards.length) { alert('Keine Karten vorhanden.'); return; }
-  const rows = [['Frage', 'Antwort', 'Level']];
+
+  const today = new Date().toISOString().split('T')[0];
+  const lastFilename = localStorage.getItem('lastImportFilename') || `lernkarten-${today}.csv`;
+  const filename = prompt('Dateiname:', lastFilename);
+  if (!filename) return;
+
+  const rows = [[`# Dateiname: ${filename}`], ['Frage', 'Antwort', 'Level']];
   cards.forEach(c => rows.push([c.question, c.answer, c.level || 0]));
   const csv = rows.map(r =>
     r.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')
   ).join('\r\n');
+
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'lernkarten.csv';
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+
+  localStorage.setItem('lastExportFilename', filename);
 }
 
 // ── CSV Import ────────────────────────────────────────────────
@@ -622,11 +632,40 @@ async function importCSV(input) {
   reader.onload = async (e) => {
     const text = e.target.result.replace(/^﻿/, '');
     const rows = parseCSV(text);
-    if (rows.length < 2) { alert('Keine gültigen Daten gefunden.'); return; }
+    if (rows.length < 1) { alert('Keine gültigen Daten gefunden.'); return; }
+
+    // Dateiname aus erster Zeile extrahieren oder Default generieren
+    let importedFilename = '';
+    let startRow = 0;
+
+    if (rows[0] && rows[0][0] && rows[0][0].startsWith('# Dateiname:')) {
+      importedFilename = rows[0][0].replace('# Dateiname:', '').trim();
+      startRow = 1;
+    } else {
+      const today = new Date().toISOString().split('T')[0];
+      importedFilename = `lernkarten-${today}.csv`;
+    }
+
+    // Dateiname speichern für nächsten Export
+    localStorage.setItem('lastImportFilename', importedFilename);
+
+    if (rows.length < startRow + 2) { alert('Keine gültigen Daten gefunden.'); return; }
+
+    // Alle existierenden Fragen sammeln (Duplikat-Check)
+    const existingQuestions = new Set(cards.map(c => c.question.toLowerCase().trim()));
+
     let added = 0;
-    for (let i = 1; i < rows.length; i++) {
+    let skipped = 0;
+    for (let i = startRow + 1; i < rows.length; i++) {
       const [q, a, lvl] = rows[i];
       if (!q || !a) continue;
+
+      const qLower = q.toLowerCase().trim();
+      if (existingQuestions.has(qLower)) {
+        skipped++;
+        continue;
+      }
+
       try {
         await addDoc(collection(db, 'cards'), {
           userId: currentUser.uid,
@@ -635,13 +674,17 @@ async function importCSV(input) {
           level: Math.min(4, Math.max(0, parseInt(lvl) || 0)),
           createdAt: new Date()
         });
+        existingQuestions.add(qLower);
         added++;
       } catch (err) {
         console.error('Import error:', err);
       }
     }
+
     input.value = '';
-    alert(`${added} Karte${added !== 1 ? 'n' : ''} importiert.`);
+    let msg = `${added} Karte${added !== 1 ? 'n' : ''} importiert.`;
+    if (skipped > 0) msg += `\n${skipped} Duplikat${skipped !== 1 ? 'e' : ''} übersprungen.`;
+    alert(msg);
   };
   reader.readAsText(file, 'UTF-8');
 }
@@ -739,6 +782,10 @@ function renderCard() {
 
   document.getElementById('quiz-body').innerHTML = `
     ${progHtml}
+    <div class="quiz-actions">
+      <button onclick="editFromQuiz()">✏️ Editieren</button>
+      <button onclick="endQuiz()">✕ Beenden</button>
+    </div>
     <div class="flashcard" id="fc" onclick="reveal()">
       ${Q.drilling ? '<span class="drill-badge">Wiederholen</span>' : ''}
       <div class="fc-label">Frage</div>
@@ -757,6 +804,12 @@ function renderCard() {
         <button class="rbtn2 r-yes" onclick="rate(true)">Gewusst ✓<span class="kbd">M</span></button>
       </div>
     </div>`;
+}
+
+function editFromQuiz() {
+  removeKeyListener();
+  removeRatingKeyListener();
+  openCardsList();
 }
 
 function onKey(e) {
@@ -838,6 +891,7 @@ window.advance = advance;
 window.renderCard = renderCard;
 window.reveal = reveal;
 window.rate = rate;
+window.editFromQuiz = editFromQuiz;
 window.addCard = addCard;
 window.openCardsList = openCardsList;
 window.deleteCard = deleteCard;
