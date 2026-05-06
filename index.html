@@ -800,8 +800,8 @@ function renderCard() {
     <div class="rating-wrap" id="rating-wrap">
       <div class="rating-lbl">Gewusst?</div>
       <div class="rating-btns-2">
-        <button class="rbtn2 r-no"  onclick="rate(false)">Nicht gewusst<span class="kbd">C</span></button>
-        <button class="rbtn2 r-yes" onclick="rate(true)">Gewusst ✓<span class="kbd">M</span></button>
+        <button class="rbtn2 r-yes" onclick="rate(true)">Gewusst ✓<span class="kbd">C</span></button>
+        <button class="rbtn2 r-no"  onclick="rate(false)">Nicht gewusst<span class="kbd">M</span></button>
       </div>
     </div>`;
 }
@@ -818,8 +818,8 @@ function onKey(e) {
 }
 
 function onRatingKey(e) {
-  if (e.key === 'c' || e.key === 'C') rate(false);
-  else if (e.key === 'm' || e.key === 'M') rate(true);
+  if (e.key === 'c' || e.key === 'C') rate(true);
+  else if (e.key === 'm' || e.key === 'M') rate(false);
 }
 
 function addKeyListener()    { document.addEventListener('keydown', onKey); }
