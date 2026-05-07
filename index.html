@@ -479,6 +479,7 @@ textarea:focus { outline: none; border-color: var(--primary); }
       <div class="io-row">
         <button class="btn-sm" onclick="exportCSV()">↓ Als CSV speichern</button>
         <button class="btn-sm" onclick="triggerImport()">↑ CSV importieren</button>
+        <button class="btn-sm" onclick="newKartei()">+ Neue Kartei</button>
       </div>
       <input type="file" id="csv-in" accept=".csv" style="display:none" onchange="switchKartei(this)">
     </div>
@@ -665,6 +666,7 @@ function editCard(id, qBase64, aBase64) {
     <div class="card-item-btns">
       <button class="save-btn" onclick="saveCard('${id}')">✓ Speichern</button>
       <button class="cancel-btn" onclick="cancelEdit('${id}')">✕ Abbrechen</button>
+      <button class="del-btn" onclick="deleteCard('${id}')">✕</button>
     </div>
   `;
 
@@ -702,14 +704,42 @@ function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
 }
 
+// ── New Kartei ────────────────────────────────────────────────
+async function newKartei() {
+  if (cards.length > 0) {
+    if (!confirm('Aktuelle Kartei speichern vor dem Löschen?')) {
+      if (!confirm('Alle Karten wirklich löschen?')) return;
+    } else {
+      // User wants to save first
+      exportCSV();
+      return; // User can create new after saving
+    }
+  }
+
+  // Delete all cards
+  try {
+    const cardsToDelete = [...cards];
+    for (const card of cardsToDelete) {
+      await deleteDoc(doc(db, 'cards', card.id));
+    }
+    // Reset localStorage
+    localStorage.removeItem('lastFilePath');
+    alert('Neue, leere Kartei erstellt!');
+  } catch (err) {
+    console.error('Delete error:', err);
+    alert('Fehler beim Löschen der Karten: ' + err.message);
+  }
+}
+
 // ── Kartei Switching ──────────────────────────────────────────
 async function triggerImport() {
   if (cards.length > 0) {
     // Auto-save current Kartei
     const today = new Date().toISOString().split('T')[0];
-    const lastFilename = localStorage.getItem('lastImportFilename') || `lernkarten-${today}.csv`;
+    const lastPath = localStorage.getItem('lastFilePath') || `lernkarten-${today}.csv`;
+    const filename = lastPath.split('/').pop() || 'kartei.csv';
 
-    const rows = [[`# Dateiname: ${lastFilename}`], ['Frage', 'Antwort', 'Level']];
+    const rows = [[`# Dateipfad: ${lastPath}`], ['Frage', 'Antwort', 'Level']];
     cards.forEach(c => rows.push([c.question, c.answer, c.level || 0]));
     const csv = rows.map(r =>
       r.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')
@@ -719,7 +749,7 @@ async function triggerImport() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = lastFilename;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -738,19 +768,23 @@ async function switchKartei(input) {
     const rows = parseCSV(text);
     if (rows.length < 1) { alert('Keine gültigen Daten gefunden.'); return; }
 
-    // Extract filename or use default
-    let importedFilename = '';
+    // Extract filepath or use default
+    let importedPath = '';
     let startRow = 0;
 
-    if (rows[0] && rows[0][0] && rows[0][0].startsWith('# Dateiname:')) {
-      importedFilename = rows[0][0].replace('# Dateiname:', '').trim();
+    if (rows[0] && rows[0][0] && rows[0][0].startsWith('# Dateipfad:')) {
+      importedPath = rows[0][0].replace('# Dateipfad:', '').trim();
+      startRow = 1;
+    } else if (rows[0] && rows[0][0] && rows[0][0].startsWith('# Dateiname:')) {
+      // Backwards compatibility with old format
+      importedPath = rows[0][0].replace('# Dateiname:', '').trim();
       startRow = 1;
     } else {
       const today = new Date().toISOString().split('T')[0];
-      importedFilename = `lernkarten-${today}.csv`;
+      importedPath = `lernkarten-${today}.csv`;
     }
 
-    localStorage.setItem('lastImportFilename', importedFilename);
+    localStorage.setItem('lastFilePath', importedPath);
 
     if (rows.length < startRow + 2) { alert('Keine gültigen Daten gefunden.'); return; }
 
@@ -770,22 +804,28 @@ async function switchKartei(input) {
       return;
     }
 
-    // Now import the new cards
+    // Collect all cards to import (fast batch)
+    const cardsToAdd = [];
+    for (let i = startRow + 1; i < rows.length; i++) {
+      const [q, a, lvl] = rows[i];
+      if (!q || !a) continue;
+      cardsToAdd.push({
+        userId: currentUser.uid,
+        question: q,
+        answer: a,
+        level: Math.min(4, Math.max(0, parseInt(lvl) || 0)),
+        createdAt: new Date()
+      });
+    }
+
+    // Import all in parallel (Promise.all) - much faster!
     let added = 0;
     try {
-      for (let i = startRow + 1; i < rows.length; i++) {
-        const [q, a, lvl] = rows[i];
-        if (!q || !a) continue;
-
-        await addDoc(collection(db, 'cards'), {
-          userId: currentUser.uid,
-          question: q,
-          answer: a,
-          level: Math.min(4, Math.max(0, parseInt(lvl) || 0)),
-          createdAt: new Date()
-        });
-        added++;
-      }
+      const promises = cardsToAdd.map(cardData =>
+        addDoc(collection(db, 'cards'), cardData)
+      );
+      await Promise.all(promises);
+      added = cardsToAdd.length;
     } catch (err) {
       console.error('Import error:', err);
     }
@@ -801,11 +841,14 @@ function exportCSV() {
   if (!cards.length) { alert('Keine Karten vorhanden.'); return; }
 
   const today = new Date().toISOString().split('T')[0];
-  const lastFilename = localStorage.getItem('lastImportFilename') || `lernkarten-${today}.csv`;
-  const filename = prompt('Dateiname:', lastFilename);
-  if (!filename) return;
+  const lastPath = localStorage.getItem('lastFilePath') || `lernkarten-${today}.csv`;
+  const fullPath = prompt('Vollständiger Pfad (z.B. /Users/name/Desktop/kartei.csv):', lastPath);
+  if (!fullPath) return;
 
-  const rows = [[`# Dateiname: ${filename}`], ['Frage', 'Antwort', 'Level']];
+  // Extract filename from path
+  const filename = fullPath.split('/').pop() || 'kartei.csv';
+
+  const rows = [[`# Dateipfad: ${fullPath}`], ['Frage', 'Antwort', 'Level']];
   cards.forEach(c => rows.push([c.question, c.answer, c.level || 0]));
   const csv = rows.map(r =>
     r.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')
@@ -819,7 +862,8 @@ function exportCSV() {
   a.click();
   URL.revokeObjectURL(url);
 
-  localStorage.setItem('lastExportFilename', filename);
+  // Remember this path for next time
+  localStorage.setItem('lastFilePath', fullPath);
 }
 
 // ── CSV Import ────────────────────────────────────────────────
@@ -1100,6 +1144,7 @@ window.exportCSV = exportCSV;
 window.importCSV = importCSV;
 window.triggerImport = triggerImport;
 window.switchKartei = switchKartei;
+window.newKartei = newKartei;
 window.loginGoogle = loginGoogle;
 window.logout = logout;
 window.esc = esc;
