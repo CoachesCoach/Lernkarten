@@ -826,15 +826,14 @@ async function processImportCSV(text, filename) {
   // Import all in parallel (Promise.all) - much faster!
   let added = 0;
   try {
-    const promises = cardsToAdd.map(cardData =>
-      addDoc(collection(db, 'cards'), cardData)
-    );
-    await Promise.all(promises);
+    await Promise.all(cardsToAdd.map(cardData => addDoc(collection(db, 'cards'), cardData)));
     added = cardsToAdd.length;
   } catch (err) {
     console.error('Import error:', err);
   }
 
+  // Resubscribe listener so new cards appear in UI
+  loadCards();
   alert(`Kartei gewechselt! ${added} Karten importiert.`);
 }
 
