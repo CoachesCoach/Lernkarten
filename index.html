@@ -475,10 +475,9 @@ textarea:focus { outline: none; border-color: var(--primary); }
     <div class="menu-btns">
       <button class="btn btn-primary" onclick="startQuiz()">Abfragen starten</button>
       <button class="btn btn-secondary" onclick="showScreen('s-add')">Karte hinzufügen</button>
-      <button class="btn btn-secondary" onclick="openCardsList()">Alle Karten</button>
+      <button class="btn btn-secondary" onclick="openCardsList()">Editieren</button>
       <div class="io-row">
-        <button class="btn-sm" onclick="exportCSV()">✓ Speichern</button>
-        <button class="btn-sm" onclick="triggerImport()">↑ Öffnen</button>
+        <button class="btn-sm" onclick="triggerImport()">Datei öffnen</button>
         <button class="btn-sm" onclick="newKartei()">+ Neu</button>
       </div>
       <input type="file" id="csv-in" accept=".csv" style="display:none" onchange="switchKartei(this)">
@@ -645,7 +644,7 @@ function openCardsList() {
           <div class="ci-a" id="a-${c.id}">${esc(c.answer)}</div>
         </div>
         <div class="card-item-btns">
-          <button class="edit-btn" onclick="editCard('${c.id}', '${btoa(c.question)}', '${btoa(c.answer)}')">✏️</button>
+          <button class="edit-btn" onclick="editCard('${c.id}')">✏️</button>
           <button class="del-btn" onclick="deleteCard('${c.id}')">✕</button>
         </div>
       </div>`
@@ -654,15 +653,19 @@ function openCardsList() {
   showScreen('s-cards');
 }
 
-function editCard(id, qBase64, aBase64) {
-  const q = atob(qBase64);
-  const a = atob(aBase64);
+function escTxt(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function editCard(id) {
+  const c = cards.find(c => c.id === id);
+  if (!c) return;
   const card = document.getElementById(`card-${id}`);
 
   card.innerHTML = `
     <div class="card-item-body">
-      <textarea id="edit-q-${id}" class="card-edit-field">${esc(q)}</textarea>
-      <textarea id="edit-a-${id}" class="card-edit-field">${esc(a)}</textarea>
+      <textarea id="edit-q-${id}" class="card-edit-field">${escTxt(c.question)}</textarea>
+      <textarea id="edit-a-${id}" class="card-edit-field">${escTxt(c.answer)}</textarea>
     </div>
     <div class="card-item-btns">
       <button class="save-btn" onclick="saveCard('${id}')">✓ Speichern</button>
@@ -721,9 +724,13 @@ async function newKartei() {
     if (!confirm('Aktuelle Kartei speichern vor dem Löschen?')) {
       if (!confirm('Alle Karten wirklich löschen?')) return;
     } else {
-      // User wants to save first
-      exportCSV();
-      return; // User can create new after saving
+      if (currentFileHandle) {
+        await saveToCurrentHandle();
+      } else {
+        const saved = await saveWithDialog();
+        if (!saved) return;
+      }
+      currentFileHandle = null;
     }
   }
 
@@ -744,39 +751,36 @@ async function newKartei() {
 
 // ── Kartei Switching ──────────────────────────────────────────
 async function triggerImport() {
+  // Step 1: Save current cards before switching
   if (cards.length > 0) {
-    // Auto-save current Kartei directly to handle if available
     if (currentFileHandle) {
-      try {
-        const csv = generateCSV(true);
-        await saveCSVToFile('﻿' + csv, currentFileHandle.name);
-      } catch (err) {
-        console.error('Auto-save error:', err);
+      await saveToCurrentHandle(); // silent auto-save to same file
+    } else {
+      if (confirm('Aktuelle Kartei zuerst speichern?')) {
+        const saved = await saveWithDialog();
+        if (!saved) return; // user cancelled save dialog
       }
     }
   }
 
-  // Try FileSystemAccessAPI first (if available)
+  // Step 2: Open new file
   if (window.showOpenFilePicker) {
     try {
       const [handle] = await window.showOpenFilePicker({
         types: [{ description: 'CSV Files', accept: { 'text/csv': ['.csv'] } }]
       });
       currentFileHandle = handle;
-
       const file = await handle.getFile();
       const text = await file.text();
-
-      // Now process like normal import
       processImportCSV(text.replace(/^﻿/, ''), handle.name);
       return;
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Open error:', err);
-      // Fall through to traditional file picker
+      return;
     }
   }
 
-  // Fallback: Traditional file picker
+  // Fallback: traditional file picker
   document.getElementById('csv-in').click();
 }
 
@@ -872,72 +876,53 @@ function generateCSV(includePath = true) {
   ).join('\r\n');
 }
 
-async function saveCSVToFile(csv, filename) {
+// Save current cards silently to the already-open file handle
+async function saveToCurrentHandle() {
+  if (!currentFileHandle) return false;
   try {
     const writable = await currentFileHandle.createWritable();
-    await writable.write(csv);
+    await writable.write('﻿' + generateCSV(true));
     await writable.close();
     return true;
   } catch (err) {
-    console.error('Write error:', err);
+    console.error('Save error:', err);
     return false;
   }
 }
 
-// ── CSV Export ────────────────────────────────────────────────
-async function exportCSV() {
-  if (!cards.length) { alert('Keine Karten vorhanden.'); return; }
-
+// Show save dialog, set currentFileHandle, then save
+async function saveWithDialog() {
+  if (!cards.length) return false;
   const today = new Date().toISOString().split('T')[0];
   const lastPath = localStorage.getItem('lastFilePath') || `lernkarten-${today}.csv`;
   const lastFilename = lastPath.split('/').pop() || 'kartei.csv';
 
-  // Try FileSystemAccessAPI first (native file save)
   if (window.showSaveFilePicker) {
     try {
-      const opts = {
+      const handle = await window.showSaveFilePicker({
         suggestedName: lastFilename,
         types: [{ description: 'CSV Files', accept: { 'text/csv': ['.csv'] } }]
-      };
-      const handle = await window.showSaveFilePicker(opts);
+      });
       currentFileHandle = handle;
-
-      const csv = generateCSV(true);
-      const fullPath = handle.name; // Browser doesn't give us full path for security
-
+      localStorage.setItem('lastFilePath', handle.name);
       const writable = await handle.createWritable();
-      await writable.write('﻿' + csv);
+      await writable.write('﻿' + generateCSV(true));
       await writable.close();
-
-      // Store filename
-      localStorage.setItem('lastFilePath', fullPath);
-      alert(`✓ Gespeichert als: ${fullPath}`);
-      return;
+      return true;
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Save error:', err);
-      // Fall through to prompt method
+      return false;
     }
   }
 
-  // Fallback: Ask for path via prompt (like before)
-  const fullPath = prompt('Dateiname (z.B. meine-kartei.csv):', lastFilename);
-  if (!fullPath) return;
-
-  const rows = [[`# Dateipfad: ${fullPath}`], ['Frage', 'Antwort', 'Level']];
-  cards.forEach(c => rows.push([c.question, c.answer, c.level || 0]));
-  const csv = rows.map(r =>
-    r.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')
-  ).join('\r\n');
-
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  // Fallback: trigger download
+  const blob = new Blob(['﻿' + generateCSV(true)], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = fullPath;
-  a.click();
+  a.href = url; a.download = lastFilename; a.click();
   URL.revokeObjectURL(url);
-
-  localStorage.setItem('lastFilePath', fullPath);
+  localStorage.setItem('lastFilePath', lastFilename);
+  return true;
 }
 
 // ── CSV Import ────────────────────────────────────────────────
@@ -1125,7 +1110,42 @@ function renderCard() {
 function editFromQuiz() {
   removeKeyListener();
   removeRatingKeyListener();
-  openCardsList();
+  const c = Q.current;
+  const fc = document.getElementById('fc');
+  fc.onclick = null;
+  fc.style.cursor = 'default';
+  fc.innerHTML = `
+    <div class="fc-label">Frage</div>
+    <textarea id="qe-q" class="card-edit-field" style="min-height:80px">${escTxt(c.question)}</textarea>
+    <div class="fc-divider"></div>
+    <div class="fc-label">Antwort</div>
+    <textarea id="qe-a" class="card-edit-field" style="min-height:100px">${escTxt(c.answer)}</textarea>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="save-btn" onclick="saveFromQuiz('${c.id}')">✓ Speichern</button>
+      <button class="cancel-btn" onclick="cancelQuizEdit()">✕ Abbrechen</button>
+    </div>`;
+  document.getElementById('rating-wrap').style.display = 'none';
+  document.getElementById('qe-q').focus();
+}
+
+async function saveFromQuiz(id) {
+  const q = document.getElementById('qe-q').value.trim();
+  const a = document.getElementById('qe-a').value.trim();
+  if (!q || !a) { alert('Frage und Antwort dürfen nicht leer sein.'); return; }
+  try {
+    await updateDoc(doc(db, 'cards', id), { question: q, answer: a });
+    Q.current.question = q;
+    Q.current.answer = a;
+  } catch (err) {
+    alert('Fehler: ' + err.message);
+  }
+  renderCard();
+  reveal();
+}
+
+function cancelQuizEdit() {
+  renderCard();
+  reveal();
 }
 
 function onKey(e) {
@@ -1179,6 +1199,8 @@ async function rate(knew) {
 }
 
 function summary() {
+  if (currentFileHandle) saveToCurrentHandle();
+
   const good = cards.filter(c => c.level >= 3).length;
   const emoji = Q.improved > 0 ? '🚀' : '✅';
   const title = Q.improved > 0 ? 'Super gemacht!' : 'Runde beendet!';
@@ -1199,6 +1221,16 @@ function summary() {
     </div>`;
 }
 
+window.addEventListener('beforeunload', (e) => {
+  if (!currentUser || !cards.length) return;
+  if (currentFileHandle) {
+    saveToCurrentHandle(); // fire and forget — local writes are usually fast enough
+  } else {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
 // Expose functions globally
 window.showScreen = showScreen;
 window.startQuiz = startQuiz;
@@ -1208,13 +1240,17 @@ window.renderCard = renderCard;
 window.reveal = reveal;
 window.rate = rate;
 window.editFromQuiz = editFromQuiz;
+window.saveFromQuiz = saveFromQuiz;
+window.cancelQuizEdit = cancelQuizEdit;
+window.escTxt = escTxt;
 window.addCard = addCard;
 window.openCardsList = openCardsList;
 window.editCard = editCard;
 window.saveCard = saveCard;
 window.cancelEdit = cancelEdit;
 window.deleteCard = deleteCard;
-window.exportCSV = exportCSV;
+window.saveToCurrentHandle = saveToCurrentHandle;
+window.saveWithDialog = saveWithDialog;
 window.importCSV = importCSV;
 window.triggerImport = triggerImport;
 window.processImportCSV = processImportCSV;
