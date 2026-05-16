@@ -1181,11 +1181,18 @@ async function rate(knew) {
     ? Math.min(4, (c.level || 0) + 1)
     : Math.max(0, (c.level || 0) - 1);
 
+  // Update local array immediately so CSV has current levels
+  const localCard = cards.find(card => card.id === c.id);
+  if (localCard) localCard.level = newLevel;
+  c.level = newLevel;
+
   try {
     await updateDoc(doc(db, 'cards', c.id), { level: newLevel });
   } catch (err) {
     console.error('Update error:', err);
   }
+
+  if (currentFileHandle) saveToCurrentHandle();
 
   if (Q.drilling) {
     if (knew) { Q.improved++; }
