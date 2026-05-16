@@ -760,10 +760,11 @@ async function triggerImport() {
       const [handle] = await window.showOpenFilePicker({
         types: [{ description: 'CSV Files', accept: { 'text/csv': ['.csv'] } }]
       });
-      currentFileHandle = handle;
+      currentFileHandle = null; // clear old handle before import
       const file = await handle.getFile();
       const text = await file.text();
-      processImportCSV(text.replace(/^﻿/, ''), handle.name);
+      await processImportCSV(text.replace(/^﻿/, ''), handle.name);
+      currentFileHandle = handle; // set new handle only after import complete
       return;
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Open error:', err);
