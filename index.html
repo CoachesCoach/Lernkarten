@@ -751,19 +751,10 @@ async function newKartei() {
 
 // ── Kartei Switching ──────────────────────────────────────────
 async function triggerImport() {
-  // Step 1: Save current cards before switching
-  if (cards.length > 0) {
-    if (currentFileHandle) {
-      await saveToCurrentHandle(); // silent auto-save to same file
-    } else {
-      if (confirm('Aktuelle Kartei zuerst speichern?')) {
-        const saved = await saveWithDialog();
-        if (!saved) return; // user cancelled save dialog
-      }
-    }
-  }
+  // Save silently if we already know the file — otherwise just open
+  if (currentFileHandle && cards.length > 0) await saveToCurrentHandle();
 
-  // Step 2: Open new file
+  // Open new file
   if (window.showOpenFilePicker) {
     try {
       const [handle] = await window.showOpenFilePicker({
@@ -807,18 +798,14 @@ async function processImportCSV(text, filename) {
 
   if (rows.length < startRow + 2) { alert('Keine gültigen Daten gefunden.'); return; }
 
-  // Delete all current cards and wait for completion
+  // Pause listener so UI doesn't flicker during delete
+  removeAllListeners();
   try {
-    const cardsToDelete = [...cards];
-    for (const card of cardsToDelete) {
-      await deleteDoc(doc(db, 'cards', card.id));
-    }
-
-    // Wait a moment for Firestore sync
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await Promise.all(cards.map(card => deleteDoc(doc(db, 'cards', card.id))));
   } catch (err) {
     console.error('Delete error:', err);
     alert('Fehler beim Löschen der Karten: ' + err.message);
+    loadCards();
     return;
   }
 
